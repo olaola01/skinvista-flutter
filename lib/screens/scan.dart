@@ -103,7 +103,8 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
   StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
   bool _isDisposing = false;
 
-  final String _picPurifyApiKey = 'k4ElcplQRB8Pg17CJMKMZ11vPIDCTpNj';
+  final String _picPurifyApiKey = 'rR2xP51RMlMyJjA8C7MyLj5RVm06eUxc';
+  // final String _picPurifyApiKey = 'k4ElcplQRB8Pg17CJMKMZ11vPIDCTpNj';
 
   @override
   void initState() {
@@ -134,40 +135,88 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
   Future<void> _initializeCamera() async {
     try {
       if (_controller != null) {
-        await _controller!.stopImageStream();
-        await _controller!.dispose();
+        if (_controller!.value.isStreamingImages) {
+          await _controller!.stopImageStream();
+        }
+        if (!_controller!.value.isInitialized) {
+          await _controller!.dispose();
+          _controller = null;
+        }
       }
-      _controller = CameraController(
-        _cameras[_currentCameraIndex],
-        ResolutionPreset.high,
-        enableAudio: false,
-      );
+      if (_cameras.isEmpty || _currentCameraIndex >= _cameras.length) {
+        print('No cameras available or invalid camera index');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No cameras available')),
+        );
+        return;
+      }
+      setState(() {
+        _controller = CameraController(
+          _cameras[_currentCameraIndex],
+          ResolutionPreset.high,
+          enableAudio: false,
+        );
+      });
       await _controller!.initialize();
-      await _controller!.setZoomLevel(_zoomLevel);
+      if (!_controller!.value.isInitialized) {
+        throw Exception('Camera failed to initialize');
+      }
+      await _controller!.setZoomLevel(_zoomLevel.clamp(1.0, 5.0));
       await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
-      _controller!.startImageStream((image) => _updateSpots(image));
-      if (mounted) setState(() {});
+      if (!_isDisposing && !_controller!.value.isStreamingImages) {
+        await _controller!.startImageStream((image) => _updateSpots(image));
+      }
+      if (mounted) {
+        setState(() {}); // Trigger UI rebuild only after initialization
+      }
     } catch (e) {
       print('Error initializing camera: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to initialize camera: $e')),
+      );
+      if (mounted) {
+        setState(() {
+          _controller = null; // Ensure controller is null on failure
+        });
+      }
     }
   }
 
   Future<void> _switchCamera() async {
-    if (_cameras.length < 2 || _isLoading) return;
+    if (_cameras.length < 2 || _isLoading) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No additional cameras available or camera busy')),
+      );
+      return;
+    }
     setState(() {
       _isLoading = true;
-      _controller?.stopImageStream();
-      _pauseAnimations();
+      _controller = null; // Temporarily nullify to prevent UI access
     });
     try {
+      if (_controller != null && _controller!.value.isStreamingImages) {
+        await _controller!.stopImageStream();
+      }
+      _pauseAnimations();
       _currentCameraIndex = (_currentCameraIndex + 1) % _cameras.length;
       await _initializeCamera();
+      if (_controller == null || !_controller!.value.isInitialized || !_controller!.value.isStreamingImages) {
+        throw Exception('Camera failed to initialize or start stream');
+      }
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _resumeAnimations();
+        });
+      }
     } catch (e) {
       print('Error switching camera: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Error switching camera")),
+        SnackBar(content: Text('Error switching camera: $e')),
       );
-    } finally {
+      // Revert to previous camera if switch fails
+      _currentCameraIndex = (_currentCameraIndex - 1) % _cameras.length;
+      await _initializeCamera();
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -747,16 +796,31 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
       return const Center(child: CircularProgressIndicator());
     }
 
-    final screenSize = MediaQuery.of(context).size;
+    var tmp = MediaQuery.of(context).size;
+
+    final screenH = math.max(tmp.height, tmp.width);
+    final screenW = math.min(tmp.height, tmp.width);
+
+    tmp = _controller!.value.previewSize!;
+
+    final previewH = math.max(tmp.height, tmp.width);
+    final previewW = math.min(tmp.height, tmp.width);
+    final screenRatio = screenH / screenW;
+    final previewRatio = previewH / previewW;
     return Scaffold(
       body: Stack(
         children: [
-          SizedBox(
-            width: screenSize.width,
-            height: screenSize.height,
-            child: AspectRatio(
-              aspectRatio: _controller!.value.aspectRatio,
-              child: CameraPreview(_controller!),
+          ClipRRect(
+            child: OverflowBox(
+              maxHeight: screenRatio > previewRatio
+                  ? screenH
+                  : screenW / previewW * previewH,
+              maxWidth: screenRatio > previewRatio
+                  ? screenH / previewH * previewW
+                  : screenW,
+              child: CameraPreview(
+                _controller!,
+              ),
             ),
           ),
           Positioned(

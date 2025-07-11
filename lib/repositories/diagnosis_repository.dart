@@ -29,9 +29,10 @@ class DiagnosisRepository {
     try {
       final response = await apiClient.getJson(endpoint: '/diagnoses');
       final List<dynamic> data = response['data'];
+      print('Raw JSON data: $data');
       return data.map((json) => Diagnosis.fromJson(json)).toList();
     } catch (e) {
-      throw Exception('Failed to fetch diagnoses: $e');
+      throw Exception('Failed to fetch diagnoses, I do not know wha is happening: $e');
     }
   }
 
