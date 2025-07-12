@@ -1,5 +1,5 @@
 class GameScore {
-  final int score;
+  final String score;
   final String userEmail;
   final DateTime createdAt;
 
