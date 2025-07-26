@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:image/image.dart' as img;
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:vibration/vibration.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
 
@@ -369,13 +370,43 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
     }
   }
 
+  // Future<XFile> _cropImageToARFrame(XFile originalImage, Size screenSize) async {
+  //   // Pass additional parameters to ensure accurate cropping
+  //   return await compute(_cropImageIsolate, [
+  //     originalImage.path,
+  //     screenSize,
+  //     _controller!.value.previewSize!, // Pass actual preview size
+  //     _currentCameraIndex, // Pass camera index to handle front/back camera
+  //   ]);
+  // }
+
   Future<XFile> _cropImageToARFrame(XFile originalImage, Size screenSize) async {
-    return await compute(_cropImageIsolate, [originalImage.path, screenSize]);
+    CroppedFile? croppedFile = await ImageCropper().cropImage(
+      sourcePath: originalImage.path,
+      aspectRatio: CropAspectRatio(ratioX: 1.0, ratioY: 1.0), // Force square
+      maxWidth: 600,
+      maxHeight: 600,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Crop Image',
+          toolbarColor: Colors.cyan,
+          toolbarWidgetColor: Colors.white,
+          lockAspectRatio: true,
+        ),
+        IOSUiSettings(
+          title: 'Crop Image',
+          aspectRatioLockEnabled: true,
+        ),
+      ],
+    );
+    return croppedFile != null ? XFile(croppedFile.path) : originalImage;
   }
 
   static Future<XFile> _cropImageIsolate(List<dynamic> args) async {
     String path = args[0];
     Size screenSize = args[1];
+    Size previewSize = args[2];
+    int cameraIndex = args[3];
     try {
       final bytes = await File(path).readAsBytes();
       img.Image? original = img.decodeImage(bytes);
@@ -383,34 +414,51 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
 
       final int imageWidth = original.width;
       final int imageHeight = original.height;
-      const double arFrameSize = 300.0;
-      final double previewAspectRatio = imageWidth / imageHeight;
+      const double arFrameSize = 600.0;
+      final double previewWidth = previewSize.width;
+      final double previewHeight = previewSize.height;
+      final double previewAspectRatio = previewWidth / previewHeight;
       final double screenAspectRatio = screenSize.width / screenSize.height;
 
-      double previewWidth;
-      double previewHeight;
+      // Calculate the dimensions of the camera preview as displayed on the screen
+      double displayWidth, displayHeight;
       if (previewAspectRatio > screenAspectRatio) {
-        previewWidth = screenSize.width;
-        previewHeight = previewWidth / previewAspectRatio;
+        displayWidth = screenSize.width;
+        displayHeight = displayWidth / previewAspectRatio;
       } else {
-        previewHeight = screenSize.height;
-        previewWidth = previewHeight * previewAspectRatio;
+        displayHeight = screenSize.height;
+        displayWidth = displayHeight * previewAspectRatio;
       }
 
-      final double arFrameLeft = (screenSize.width - arFrameSize) / 2;
-      final double arFrameTop = (screenSize.height - arFrameSize) / 2;
-      final double scaleX = imageWidth / previewWidth;
-      final double scaleY = imageHeight / previewHeight;
+      // The AR frame is a 300x300 square in the UI (as defined in GestureDetector)
+      const double uiFrameSize = 300.0; // Size of the AR frame in the UI
+      final double arFrameLeft = (screenSize.width - uiFrameSize) / 2;
+      final double arFrameTop = (screenSize.height - uiFrameSize) / 2;
 
-      final int cropLeft = (arFrameLeft * scaleX).round();
+      // Calculate scaling factors to map UI coordinates to image coordinates
+      final double scaleX = imageWidth / displayWidth;
+      final double scaleY = imageHeight / displayHeight;
+
+      // Adjust for front camera mirroring (if using front camera)
+      bool isFrontCamera = cameraIndex != 0; // Assuming index 0 is back camera
+      final int cropLeft = isFrontCamera
+          ? (imageWidth - (arFrameLeft + uiFrameSize) * scaleX).round()
+          : (arFrameLeft * scaleX).round();
       final int cropTop = (arFrameTop * scaleY).round();
-      final int cropWidth = math.min((arFrameSize * scaleX).round(), imageWidth).toInt();
-      final int cropHeight = math.min((arFrameSize * scaleY).round(), imageHeight).toInt();
+      final int cropWidth = (uiFrameSize * scaleX).round();
+      final int cropHeight = (uiFrameSize * scaleY).round();
 
+      // Clamp coordinates to prevent out-of-bounds errors
       final int adjustedLeft = cropLeft.clamp(0, math.max(0, imageWidth - cropWidth)).toInt();
       final int adjustedTop = cropTop.clamp(0, math.max(0, imageHeight - cropHeight)).toInt();
       final int adjustedWidth = cropWidth.clamp(1, math.max(1, imageWidth - adjustedLeft)).toInt();
       final int adjustedHeight = cropHeight.clamp(1, math.max(1, imageHeight - adjustedTop)).toInt();
+
+      // Debug logging
+      print('Original Image: ${imageWidth}x${imageHeight}');
+      print('Preview Size: ${previewWidth}x${previewHeight}');
+      print('Display Size: ${displayWidth}x${displayHeight}');
+      print('Crop: left=$adjustedLeft, top=$adjustedTop, width=$adjustedWidth, height=$adjustedHeight');
 
       img.Image cropped = img.copyCrop(
         original,
@@ -420,9 +468,20 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
         height: adjustedHeight,
       );
 
-      final croppedBytes = img.encodeJpg(cropped, quality: 75);
+      // Resize to desired output size (e.g., 600x600) for consistency
+      img.Image resized = img.copyResize(
+        cropped,
+        width: arFrameSize.toInt(),
+        height: arFrameSize.toInt(),
+        interpolation: img.Interpolation.cubic, // High-quality resizing
+      );
+
+      final croppedBytes = img.encodeJpg(cropped, quality: 90);
       final tempPath = path.replaceAll('.jpg', '_cropped.jpg');
       await File(tempPath).writeAsBytes(croppedBytes);
+
+      // Save original for debugging
+      await File(path).copy(path.replaceAll('.jpg', '_original.jpg'));
 
       return XFile(tempPath);
     } catch (e) {
@@ -496,6 +555,9 @@ class _ScanState extends State<Scan> with WidgetsBindingObserver, TickerProvider
       if (_hasVibrationSupport == true) {
         Vibration.vibrate(duration: 50);
       }
+      // Set focus and exposure before capturing
+      await _controller!.setFocusMode(FocusMode.auto);
+      await _controller!.setExposureMode(ExposureMode.auto);
       XFile image = await _controller!.takePicture();
       final screenSize = MediaQuery.of(context).size;
       XFile croppedImage = await _cropImageToARFrame(image, screenSize);

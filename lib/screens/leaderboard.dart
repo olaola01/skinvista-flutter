@@ -27,6 +27,15 @@ class LeaderboardView extends StatelessWidget {
 
   const LeaderboardView({super.key, required this.fromGame});
 
+  String maskEmail(String email) {
+    final parts = email.split('@');
+    if (parts.length != 2) return email;
+    final username = parts[0];
+    final domain = parts[1];
+    if (username.length <= 3) return '$username@$domain';
+    return '${username.substring(0, 3)}***@$domain';
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
@@ -139,7 +148,7 @@ class LeaderboardView extends StatelessWidget {
                                 ),
                               ),
                               title: Text(
-                                score.userEmail,
+                                maskEmail(score.userEmail),
                                 style: const TextStyle(fontWeight: FontWeight.bold),
                               ),
                               subtitle: Text(
